@@ -1,18 +1,23 @@
 const CSV_PATH = "links.csv";
 const ITEMS_PER_PAGE = 30;
-const AUTO_EMBED_COUNT = 6;
+const OPEN_BEFORE = 2;
+const OPEN_AFTER = 2;
 
 let allItems = [];
 let filteredItems = [];
 let currentPage = 1;
 let currentQuery = "";
+let observer = null;
+let currentCenterIndex = 0;
 
 document.addEventListener("DOMContentLoaded", async () => {
   try {
     const csvText = await fetchCsv(CSV_PATH);
-    allItems = parseCsv(csvText)
-      .map(normalizeRow)
-      .filter(item => item.url);
+    const parsedRows = parseCsv(csvText);
+
+    allItems = parsedRows
+      .map((row, index) => normalizeRow(row, index))
+      .filter(item => item && item.url);
 
     filteredItems = [...allItems];
     currentPage = getPageFromUrl();
@@ -20,7 +25,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     wireSearch();
     render();
   } catch (error) {
-    console.error("Failed to initialize gallery:", error);
+    console.error("Gallery init failed:", error);
     setStatus("Could not load links.csv");
     renderError("Failed to load gallery data.");
   }
@@ -31,7 +36,7 @@ async function fetchCsv(path) {
   if (!response.ok) {
     throw new Error(`Failed to fetch CSV: ${response.status} ${response.statusText}`);
   }
-  return await response.text();
+  return response.text();
 }
 
 function parseCsv(text) {
@@ -60,6 +65,7 @@ function parseCsv(text) {
       }
       row.push(cell.trim());
       cell = "";
+
       if (row.some(value => value !== "")) {
         rows.push(row);
       }
@@ -80,9 +86,11 @@ function parseCsv(text) {
 }
 
 function normalizeRow(row, index) {
-  const first = row[0] || "";
-  const second = row[1] || "";
-  const third = row[2] || "";
+  if (!row || !row.length) return null;
+
+  const first = (row[0] || "").trim();
+  const second = (row[1] || "").trim();
+  const third = (row[2] || "").trim();
 
   const looksLikeHeader =
     index === 0 &&
@@ -92,15 +100,27 @@ function normalizeRow(row, index) {
       third.toLowerCase() === "note"
     );
 
-  if (looksLikeHeader) {
-    return { skip: true };
-  }
+  if (looksLikeHeader) return null;
+  if (!first) return null;
+
+  const fixedUrl = normalizePdfUrl(first);
 
   return {
-    url: first,
-    title: second || deriveTitleFromUrl(first, index + 1),
+    url: fixedUrl,
+    title: second || deriveTitleFromUrl(fixedUrl, index + 1),
     note: third || ""
   };
+}
+
+function normalizePdfUrl(url) {
+  const trimmed = String(url).trim();
+
+  const driveMatch = trimmed.match(/^https:\/\/drive\.google\.com\/file\/d\/([^/]+).*$/i);
+  if (driveMatch) {
+    return `https://drive.google.com/file/d/${driveMatch[1]}/preview`;
+  }
+
+  return trimmed;
 }
 
 function deriveTitleFromUrl(url, fallbackNumber) {
@@ -111,7 +131,7 @@ function deriveTitleFromUrl(url, fallbackNumber) {
       return decodeURIComponent(lastSegment);
     }
   } catch (_) {
-    // ignore malformed URLs
+    // ignore
   }
   return `PDF ${fallbackNumber}`;
 }
@@ -120,29 +140,21 @@ function wireSearch() {
   const searchInput = document.getElementById("searchInput");
   if (!searchInput) return;
 
-  searchInput.addEventListener("input", (event) => {
+  searchInput.addEventListener("input", event => {
     currentQuery = event.target.value.trim().toLowerCase();
     currentPage = 1;
-    applyFilter();
     render();
   });
 }
 
 function applyFilter() {
   if (!currentQuery) {
-    filteredItems = allItems.filter(item => !item.skip);
+    filteredItems = [...allItems];
     return;
   }
 
   filteredItems = allItems.filter(item => {
-    if (item.skip) return false;
-
-    const haystack = [
-      item.title || "",
-      item.note || "",
-      item.url || ""
-    ].join(" ").toLowerCase();
-
+    const haystack = `${item.title} ${item.note} ${item.url}`.toLowerCase();
     return haystack.includes(currentQuery);
   });
 }
@@ -152,7 +164,6 @@ function render() {
 
   const totalPages = Math.max(1, Math.ceil(filteredItems.length / ITEMS_PER_PAGE));
   currentPage = clamp(currentPage, 1, totalPages);
-
   setPageInUrl(currentPage);
 
   renderGallery();
@@ -161,15 +172,14 @@ function render() {
 }
 
 function renderGallery() {
+  disconnectObserver();
+
   const gallery = document.getElementById("gallery");
-  if (!gallery) {
-    console.warn('Missing #gallery element');
-    return;
-  }
+  if (!gallery) return;
 
   gallery.innerHTML = "";
 
-  if (filteredItems.length === 0) {
+  if (!filteredItems.length) {
     gallery.innerHTML = `<div class="empty-state">No results found.</div>`;
     return;
   }
@@ -179,16 +189,13 @@ function renderGallery() {
   const pageItems = filteredItems.slice(start, end);
 
   pageItems.forEach((item, indexOnPage) => {
-    const shouldEmbed =
-      indexOnPage < AUTO_EMBED_COUNT ||
-      indexOnPage >= pageItems.length - AUTO_EMBED_COUNT;
-
-    const card = document.createElement("article");
-    card.className = "pdf-card";
-
     const safeTitle = escapeHtml(item.title || "Untitled");
     const safeNote = escapeHtml(item.note || "");
     const safeUrl = escapeAttribute(item.url);
+
+    const card = document.createElement("article");
+    card.className = "pdf-card";
+    card.dataset.index = String(indexOnPage);
 
     card.innerHTML = `
       <div class="pdf-card__header">
@@ -196,46 +203,76 @@ function renderGallery() {
         ${safeNote ? `<p class="pdf-card__note">${safeNote}</p>` : ""}
       </div>
 
-      <div class="pdf-card__viewer" data-url="${safeUrl}">
-        ${
-          shouldEmbed
-            ? buildIframeHtml(safeUrl, safeTitle)
-            : `
-              <div class="pdf-card__placeholder">
-                <p>Preview parked to reduce load.</p>
-                <button type="button" class="pdf-card__load-btn">Load Preview</button>
-              </div>
-            `
-        }
+      <div class="pdf-card__viewer" data-url="${safeUrl}" data-title="${safeTitle}">
+        ${buildPlaceholderHtml()}
       </div>
 
       <div class="pdf-card__actions">
-        <a class="pdf-card__open-link" href="${safeUrl}" target="_blank" rel="noopener noreferrer">
-          Open PDF
-        </a>
+        <a class="pdf-card__open-link" href="${safeUrl}" target="_blank" rel="noopener noreferrer">Open PDF</a>
       </div>
     `;
 
     gallery.appendChild(card);
   });
 
-  wireLoadPreviewButtons(gallery);
+  currentCenterIndex = 0;
+  setupViewportObserver();
+  updateActiveWindow(0);
 }
 
-function wireLoadPreviewButtons(root) {
-  const buttons = root.querySelectorAll(".pdf-card__load-btn");
+function setupViewportObserver() {
+  const cards = document.querySelectorAll(".pdf-card");
+  if (!cards.length) return;
 
-  buttons.forEach((button) => {
-    button.addEventListener("click", () => {
-      const viewer = button.closest(".pdf-card__viewer");
-      if (!viewer) return;
+  observer = new IntersectionObserver(handleIntersections, {
+    root: null,
+    rootMargin: "-20% 0px -20% 0px",
+    threshold: [0.15, 0.3, 0.45, 0.6, 0.75]
+  });
 
-      const url = viewer.dataset.url || "";
-      const titleEl = button.closest(".pdf-card")?.querySelector(".pdf-card__title");
-      const title = titleEl ? titleEl.textContent.trim() : "PDF Preview";
+  cards.forEach(card => observer.observe(card));
+}
 
-      viewer.innerHTML = buildIframeHtml(escapeAttribute(url), escapeHtml(title));
-    });
+function handleIntersections(entries) {
+  let bestEntry = null;
+
+  for (const entry of entries) {
+    if (!entry.isIntersecting) continue;
+
+    if (!bestEntry || entry.intersectionRatio > bestEntry.intersectionRatio) {
+      bestEntry = entry;
+    }
+  }
+
+  if (!bestEntry) return;
+
+  const nextIndex = parseInt(bestEntry.target.dataset.index || "0", 10);
+  if (!Number.isFinite(nextIndex)) return;
+  if (nextIndex === currentCenterIndex) return;
+
+  currentCenterIndex = nextIndex;
+  updateActiveWindow(currentCenterIndex);
+}
+
+function updateActiveWindow(centerIndex) {
+  const cards = document.querySelectorAll(".pdf-card");
+
+  cards.forEach(card => {
+    const index = parseInt(card.dataset.index || "0", 10);
+    const viewer = card.querySelector(".pdf-card__viewer");
+    if (!viewer) return;
+
+    const url = viewer.dataset.url || "";
+    const title = viewer.dataset.title || "PDF Preview";
+
+    const shouldOpen = index >= centerIndex - OPEN_BEFORE && index <= centerIndex + OPEN_AFTER;
+    const hasIframe = !!viewer.querySelector("iframe");
+
+    if (shouldOpen && !hasIframe) {
+      viewer.innerHTML = buildIframeHtml(url, title);
+    } else if (!shouldOpen && hasIframe) {
+      viewer.innerHTML = buildPlaceholderHtml();
+    }
   });
 }
 
@@ -243,11 +280,20 @@ function buildIframeHtml(url, title) {
   return `
     <iframe
       class="pdf-card__iframe"
-      src="${url}"
-      title="${title}"
+      src="${escapeAttribute(url)}"
+      title="${escapeAttribute(title)}"
       loading="lazy"
       referrerpolicy="no-referrer"
+      allowfullscreen
     ></iframe>
+  `;
+}
+
+function buildPlaceholderHtml() {
+  return `
+    <div class="pdf-card__placeholder">
+      <p>Preview loads automatically near the viewport.</p>
+    </div>
   `;
 }
 
@@ -268,24 +314,24 @@ function renderPagination(totalPages) {
     })
   );
 
-  const windowPages = getPageWindow(currentPage, totalPages, 7);
-  windowPages.forEach((page) => {
+  const pages = getPageWindow(currentPage, totalPages, 7);
+
+  pages.forEach(page => {
     if (page === "...") {
-      const span = document.createElement("span");
-      span.className = "pagination__ellipsis";
-      span.textContent = "...";
-      wrapper.appendChild(span);
+      const ellipsis = document.createElement("span");
+      ellipsis.className = "pagination__ellipsis";
+      ellipsis.textContent = "...";
+      wrapper.appendChild(ellipsis);
       return;
     }
 
-    const isActive = page === currentPage;
     const button = createPageButton(String(page), true, () => {
       currentPage = page;
       render();
       scrollToTop();
     });
 
-    if (isActive) {
+    if (page === currentPage) {
       button.classList.add("is-active");
       button.setAttribute("aria-current", "page");
     }
@@ -326,6 +372,7 @@ function getPageWindow(current, total, maxVisible) {
 
   const pages = [];
   const innerVisible = maxVisible - 2;
+
   let start = Math.max(2, current - Math.floor(innerVisible / 2));
   let end = Math.min(total - 1, start + innerVisible - 1);
 
@@ -351,27 +398,31 @@ function getPageWindow(current, total, maxVisible) {
 }
 
 function renderStatus(totalPages) {
-  const start = filteredItems.length === 0 ? 0 : (currentPage - 1) * ITEMS_PER_PAGE + 1;
+  const status = document.getElementById("status");
+  if (!status) return;
+
+  if (!filteredItems.length) {
+    status.textContent = "0 items";
+    return;
+  }
+
+  const start = (currentPage - 1) * ITEMS_PER_PAGE + 1;
   const end = Math.min(currentPage * ITEMS_PER_PAGE, filteredItems.length);
 
-  const message = filteredItems.length === 0
-    ? "0 items"
-    : `Showing ${start}-${end} of ${filteredItems.length} item${filteredItems.length === 1 ? "" : "s"} • Page ${currentPage} of ${totalPages}`;
+  status.textContent = `Showing ${start}-${end} of ${filteredItems.length} • Page ${currentPage} of ${totalPages}`;
+}
 
-  setStatus(message);
+function renderError(message) {
+  const gallery = document.getElementById("gallery");
+  if (!gallery) return;
+
+  gallery.innerHTML = `<div class="error-state">${escapeHtml(message)}</div>`;
 }
 
 function setStatus(message) {
   const status = document.getElementById("status");
   if (status) {
     status.textContent = message;
-  }
-}
-
-function renderError(message) {
-  const gallery = document.getElementById("gallery");
-  if (gallery) {
-    gallery.innerHTML = `<div class="error-state">${escapeHtml(message)}</div>`;
   }
 }
 
@@ -392,6 +443,13 @@ function scrollToTop() {
     top: 0,
     behavior: "smooth"
   });
+}
+
+function disconnectObserver() {
+  if (observer) {
+    observer.disconnect();
+    observer = null;
+  }
 }
 
 function clamp(value, min, max) {
