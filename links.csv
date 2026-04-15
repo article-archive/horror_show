@@ -1,0 +1,4 @@
+url,title,note
+https://example.com/sample1.pdf,Sample PDF 1,Replace this file with your real CSV
+https://example.com/sample2.pdf,Sample PDF 2,Column 1 must be the PDF URL
+https://example.com/sample3.pdf,Sample PDF 3,Column 2 and 3 are optional

@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PDF Library</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap">
+      <h1>PDF Library</h1>
+      <p class="subtitle">Static, paginated, and dead-simple.</p>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="controls">
+      <input id="searchInput" type="search" placeholder="Search titles or URLs" aria-label="Search PDFs" />
+      <div class="meta">
+        <span id="countLabel">Loading…</span>
+        <span id="pageLabel"></span>
+      </div>
+    </section>
+
+    <section id="errorBox" class="error hidden"></section>
+    <section id="list" class="list" aria-live="polite"></section>
+
+    <nav class="pager" aria-label="Pagination">
+      <button id="prevBtn" class="btn" type="button">Previous</button>
+      <div id="pageNumbers" class="page-numbers"></div>
+      <button id="nextBtn" class="btn" type="button">Next</button>
+    </nav>
+  </main>
+
+  <footer class="wrap footer">
+    <small>Edit <code>links.csv</code> and redeploy. No build step needed.</small>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
