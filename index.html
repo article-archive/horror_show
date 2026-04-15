@@ -10,27 +10,26 @@
   <header class="topbar">
     <div class="wrap">
       <h1>PDF Library</h1>
-      <p class="subtitle">Static, paginated, and dead-simple.</p>
+      <p class="subtitle">Embedded previews, paginated, and static.</p>
     </div>
   </header>
 
   <main class="wrap">
     <section class="controls">
-      <input id="searchInput" type="search" placeholder="Search titles or URLs" aria-label="Search PDFs" />
+      <input
+        id="searchInput"
+        type="search"
+        placeholder="Search titles, notes, or URLs"
+        aria-label="Search PDFs"
+      />
       <div class="meta">
-        <span id="countLabel">Loading…</span>
-        <span id="pageLabel"></span>
+        <span id="status">Loading…</span>
       </div>
     </section>
 
-    <section id="errorBox" class="error hidden"></section>
-    <section id="list" class="list" aria-live="polite"></section>
+    <section id="gallery" class="list" aria-live="polite"></section>
 
-    <nav class="pager" aria-label="Pagination">
-      <button id="prevBtn" class="btn" type="button">Previous</button>
-      <div id="pageNumbers" class="page-numbers"></div>
-      <button id="nextBtn" class="btn" type="button">Next</button>
-    </nav>
+    <nav id="pagination" class="pager" aria-label="Pagination"></nav>
   </main>
 
   <footer class="wrap footer">
