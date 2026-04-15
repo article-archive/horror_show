@@ -2,13 +2,14 @@ const CSV_PATH = "links.csv";
 const ITEMS_PER_PAGE = 30;
 const OPEN_BEFORE = 2;
 const OPEN_AFTER = 2;
+const CENTER_LOCK_RATIO = 0.18;
 
 let allItems = [];
 let filteredItems = [];
 let currentPage = 1;
 let currentQuery = "";
-let observer = null;
 let currentCenterIndex = 0;
+let scrollTicking = false;
 
 document.addEventListener("DOMContentLoaded", async () => {
   try {
@@ -23,6 +24,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     currentPage = getPageFromUrl();
 
     wireSearch();
+    wireScrollCentering();
     render();
   } catch (error) {
     console.error("Gallery init failed:", error);
@@ -60,15 +62,10 @@ function parseCsv(text) {
       row.push(cell.trim());
       cell = "";
     } else if ((char === "\n" || char === "\r") && !inQuotes) {
-      if (char === "\r" && next === "\n") {
-        i++;
-      }
+      if (char === "\r" && next === "\n") i++;
       row.push(cell.trim());
       cell = "";
-
-      if (row.some(value => value !== "")) {
-        rows.push(row);
-      }
+      if (row.some(value => value !== "")) rows.push(row);
       row = [];
     } else {
       cell += char;
@@ -77,9 +74,7 @@ function parseCsv(text) {
 
   if (cell.length > 0 || row.length > 0) {
     row.push(cell.trim());
-    if (row.some(value => value !== "")) {
-      rows.push(row);
-    }
+    if (row.some(value => value !== "")) rows.push(row);
   }
 
   return rows;
@@ -100,8 +95,7 @@ function normalizeRow(row, index) {
       third.toLowerCase() === "note"
     );
 
-  if (looksLikeHeader) return null;
-  if (!first) return null;
+  if (looksLikeHeader || !first) return null;
 
   const fixedUrl = normalizePdfUrl(first);
 
@@ -114,12 +108,10 @@ function normalizeRow(row, index) {
 
 function normalizePdfUrl(url) {
   const trimmed = String(url).trim();
-
   const driveMatch = trimmed.match(/^https:\/\/drive\.google\.com\/file\/d\/([^/]+).*$/i);
   if (driveMatch) {
     return `https://drive.google.com/file/d/${driveMatch[1]}/preview`;
   }
-
   return trimmed;
 }
 
@@ -127,12 +119,8 @@ function deriveTitleFromUrl(url, fallbackNumber) {
   try {
     const parsed = new URL(url);
     const lastSegment = parsed.pathname.split("/").filter(Boolean).pop();
-    if (lastSegment) {
-      return decodeURIComponent(lastSegment);
-    }
-  } catch (_) {
-    // ignore
-  }
+    if (lastSegment) return decodeURIComponent(lastSegment);
+  } catch (_) {}
   return `PDF ${fallbackNumber}`;
 }
 
@@ -144,6 +132,22 @@ function wireSearch() {
     currentQuery = event.target.value.trim().toLowerCase();
     currentPage = 1;
     render();
+  });
+}
+
+function wireScrollCentering() {
+  window.addEventListener("scroll", () => {
+    if (scrollTicking) return;
+
+    scrollTicking = true;
+    requestAnimationFrame(() => {
+      updateCenterFromViewport();
+      scrollTicking = false;
+    });
+  }, { passive: true });
+
+  window.addEventListener("resize", () => {
+    requestAnimationFrame(updateCenterFromViewport);
   });
 }
 
@@ -169,11 +173,14 @@ function render() {
   renderGallery();
   renderPagination(totalPages);
   renderStatus(totalPages);
+
+  requestAnimationFrame(() => {
+    currentCenterIndex = findBestCenterIndex();
+    updateActiveWindow(currentCenterIndex);
+  });
 }
 
 function renderGallery() {
-  disconnectObserver();
-
   const gallery = document.getElementById("gallery");
   if (!gallery) return;
 
@@ -214,44 +221,41 @@ function renderGallery() {
 
     gallery.appendChild(card);
   });
-
-  currentCenterIndex = 0;
-  setupViewportObserver();
-  updateActiveWindow(0);
 }
 
-function setupViewportObserver() {
-  const cards = document.querySelectorAll(".pdf-card");
-  if (!cards.length) return;
-
-  observer = new IntersectionObserver(handleIntersections, {
-    root: null,
-    rootMargin: "-20% 0px -20% 0px",
-    threshold: [0.15, 0.3, 0.45, 0.6, 0.75]
-  });
-
-  cards.forEach(card => observer.observe(card));
-}
-
-function handleIntersections(entries) {
-  let bestEntry = null;
-
-  for (const entry of entries) {
-    if (!entry.isIntersecting) continue;
-
-    if (!bestEntry || entry.intersectionRatio > bestEntry.intersectionRatio) {
-      bestEntry = entry;
-    }
-  }
-
-  if (!bestEntry) return;
-
-  const nextIndex = parseInt(bestEntry.target.dataset.index || "0", 10);
-  if (!Number.isFinite(nextIndex)) return;
+function updateCenterFromViewport() {
+  const nextIndex = findBestCenterIndex();
   if (nextIndex === currentCenterIndex) return;
 
   currentCenterIndex = nextIndex;
   updateActiveWindow(currentCenterIndex);
+}
+
+function findBestCenterIndex() {
+  const cards = Array.from(document.querySelectorAll(".pdf-card"));
+  if (!cards.length) return 0;
+
+  const viewportCenter = window.innerHeight * 0.5;
+  let bestIndex = 0;
+  let bestDistance = Infinity;
+
+  cards.forEach(card => {
+    const rect = card.getBoundingClientRect();
+
+    if (rect.bottom < window.innerHeight * 0.05 || rect.top > window.innerHeight * 0.95) {
+      return;
+    }
+
+    const cardCenter = rect.top + rect.height / 2;
+    const distance = Math.abs(cardCenter - viewportCenter);
+
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = parseInt(card.dataset.index || "0", 10);
+    }
+  });
+
+  return bestIndex;
 }
 
 function updateActiveWindow(centerIndex) {
@@ -302,17 +306,14 @@ function renderPagination(totalPages) {
   if (!pagination) return;
 
   pagination.innerHTML = "";
-
   const wrapper = document.createElement("div");
   wrapper.className = "pagination";
 
-  wrapper.appendChild(
-    createPageButton("Prev", currentPage > 1, () => {
-      currentPage--;
-      render();
-      scrollToTop();
-    })
-  );
+  wrapper.appendChild(createPageButton("Prev", currentPage > 1, () => {
+    currentPage--;
+    render();
+    scrollToTop();
+  }));
 
   const pages = getPageWindow(currentPage, totalPages, 7);
 
@@ -339,13 +340,11 @@ function renderPagination(totalPages) {
     wrapper.appendChild(button);
   });
 
-  wrapper.appendChild(
-    createPageButton("Next", currentPage < totalPages, () => {
-      currentPage++;
-      render();
-      scrollToTop();
-    })
-  );
+  wrapper.appendChild(createPageButton("Next", currentPage < totalPages, () => {
+    currentPage++;
+    render();
+    scrollToTop();
+  }));
 
   pagination.appendChild(wrapper);
 }
@@ -366,32 +365,18 @@ function createPageButton(label, enabled, onClick) {
 }
 
 function getPageWindow(current, total, maxVisible) {
-  if (total <= maxVisible) {
-    return Array.from({ length: total }, (_, i) => i + 1);
-  }
+  if (total <= maxVisible) return Array.from({ length: total }, (_, i) => i + 1);
 
   const pages = [];
   const innerVisible = maxVisible - 2;
-
   let start = Math.max(2, current - Math.floor(innerVisible / 2));
   let end = Math.min(total - 1, start + innerVisible - 1);
-
   start = Math.max(2, end - innerVisible + 1);
 
   pages.push(1);
-
-  if (start > 2) {
-    pages.push("...");
-  }
-
-  for (let i = start; i <= end; i++) {
-    pages.push(i);
-  }
-
-  if (end < total - 1) {
-    pages.push("...");
-  }
-
+  if (start > 2) pages.push("...");
+  for (let i = start; i <= end; i++) pages.push(i);
+  if (end < total - 1) pages.push("...");
   pages.push(total);
 
   return pages;
@@ -408,22 +393,18 @@ function renderStatus(totalPages) {
 
   const start = (currentPage - 1) * ITEMS_PER_PAGE + 1;
   const end = Math.min(currentPage * ITEMS_PER_PAGE, filteredItems.length);
-
   status.textContent = `Showing ${start}-${end} of ${filteredItems.length} • Page ${currentPage} of ${totalPages}`;
 }
 
 function renderError(message) {
   const gallery = document.getElementById("gallery");
   if (!gallery) return;
-
   gallery.innerHTML = `<div class="error-state">${escapeHtml(message)}</div>`;
 }
 
 function setStatus(message) {
   const status = document.getElementById("status");
-  if (status) {
-    status.textContent = message;
-  }
+  if (status) status.textContent = message;
 }
 
 function getPageFromUrl() {
@@ -439,17 +420,7 @@ function setPageInUrl(page) {
 }
 
 function scrollToTop() {
-  window.scrollTo({
-    top: 0,
-    behavior: "smooth"
-  });
-}
-
-function disconnectObserver() {
-  if (observer) {
-    observer.disconnect();
-    observer = null;
-  }
+  window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
 function clamp(value, min, max) {
