@@ -1,236 +1,405 @@
-const PAGE_SIZE = 30;
 const CSV_PATH = "links.csv";
-
-const listEl = document.getElementById("list");
-const errorBox = document.getElementById("errorBox");
-const countLabel = document.getElementById("countLabel");
-const pageLabel = document.getElementById("pageLabel");
-const searchInput = document.getElementById("searchInput");
-const prevBtn = document.getElementById("prevBtn");
-const nextBtn = document.getElementById("nextBtn");
-const pageNumbers = document.getElementById("pageNumbers");
+const ITEMS_PER_PAGE = 30;
+const AUTO_EMBED_COUNT = 6;
 
 let allItems = [];
 let filteredItems = [];
-let currentPage = getPageFromUrl();
-let currentQuery = new URLSearchParams(location.search).get("q") || "";
+let currentPage = 1;
+let currentQuery = "";
 
-searchInput.value = currentQuery;
-
-init();
-
-async function init() {
+document.addEventListener("DOMContentLoaded", async () => {
   try {
-    const response = await fetch(CSV_PATH, { cache: "no-store" });
-    if (!response.ok) {
-      throw new Error(`Could not load ${CSV_PATH}. Make sure it exists in the site root.`);
-    }
-    const csvText = await response.text();
-    allItems = normalizeRows(parseCsv(csvText));
-    filteredItems = applySearch(allItems, currentQuery);
-    clampPage();
+    const csvText = await fetchCsv(CSV_PATH);
+    allItems = parseCsv(csvText)
+      .map(normalizeRow)
+      .filter(item => item.url);
+
+    filteredItems = [...allItems];
+    currentPage = getPageFromUrl();
+
+    wireSearch();
     render();
   } catch (error) {
-    showError(error.message);
-    console.error(error);
+    console.error("Failed to initialize gallery:", error);
+    setStatus("Could not load links.csv");
+    renderError("Failed to load gallery data.");
   }
+});
+
+async function fetchCsv(path) {
+  const response = await fetch(path, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch CSV: ${response.status} ${response.statusText}`);
+  }
+  return await response.text();
 }
 
 function parseCsv(text) {
   const rows = [];
   let row = [];
-  let value = "";
+  let cell = "";
   let inQuotes = false;
 
   for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
+    const char = text[i];
     const next = text[i + 1];
 
-    if (ch === '"') {
+    if (char === '"') {
       if (inQuotes && next === '"') {
-        value += '"';
+        cell += '"';
         i++;
       } else {
         inQuotes = !inQuotes;
       }
-      continue;
-    }
-
-    if (ch === "," && !inQuotes) {
-      row.push(value);
-      value = "";
-      continue;
-    }
-
-    if ((ch === "\n" || ch === "\r") && !inQuotes) {
-      if (ch === "\r" && next === "\n") i++;
-      row.push(value);
-      rows.push(row);
+    } else if (char === "," && !inQuotes) {
+      row.push(cell.trim());
+      cell = "";
+    } else if ((char === "\n" || char === "\r") && !inQuotes) {
+      if (char === "\r" && next === "\n") {
+        i++;
+      }
+      row.push(cell.trim());
+      cell = "";
+      if (row.some(value => value !== "")) {
+        rows.push(row);
+      }
       row = [];
-      value = "";
-      continue;
-    }
-
-    value += ch;
-  }
-
-  if (value.length || row.length) {
-    row.push(value);
-    rows.push(row);
-  }
-
-  return rows
-    .map(cols => cols.map(col => col.trim()))
-    .filter(cols => cols.some(col => col.length));
-}
-
-function normalizeRows(rows) {
-  if (!rows.length) return [];
-
-  const firstCell = (rows[0][0] || "").toLowerCase();
-  const looksLikeHeader = ["url", "link", "pdf", "href"].includes(firstCell);
-
-  const dataRows = looksLikeHeader ? rows.slice(1) : rows;
-
-  return dataRows
-    .map((cols, index) => {
-      const url = (cols[0] || "").trim();
-      const title = (cols[1] || "").trim() || `PDF ${index + 1}`;
-      const note = (cols[2] || "").trim();
-      return {
-        id: index + 1,
-        url,
-        title,
-        note
-      };
-    })
-    .filter(item => item.url);
-}
-
-function applySearch(items, query) {
-  if (!query) return items.slice();
-  const q = query.toLowerCase();
-  return items.filter(item =>
-    item.title.toLowerCase().includes(q) ||
-    item.url.toLowerCase().includes(q) ||
-    item.note.toLowerCase().includes(q)
-  );
-}
-
-function render() {
-  const totalPages = Math.max(1, Math.ceil(filteredItems.length / PAGE_SIZE));
-  const start = (currentPage - 1) * PAGE_SIZE;
-  const pageItems = filteredItems.slice(start, start + PAGE_SIZE);
-
-  listEl.innerHTML = "";
-
-  if (!pageItems.length) {
-    const empty = document.createElement("div");
-    empty.className = "card";
-    empty.innerHTML = "<h2>No results</h2><div class='url'>Try a different search or check links.csv.</div>";
-    listEl.appendChild(empty);
-  } else {
-    for (const item of pageItems) {
-      const card = document.createElement("article");
-      card.className = "card";
-
-      const safeTitle = escapeHtml(item.title);
-      const safeUrl = escapeHtml(item.url);
-      const safeNote = escapeHtml(item.note || "");
-
-      card.innerHTML = `
-        <h2>${safeTitle}</h2>
-        <div class="url">${safeUrl}</div>
-        ${safeNote ? `<div class="url" style="margin-top:0.35rem">${safeNote}</div>` : ""}
-        <div class="actions">
-          <a class="linkbtn" href="${item.url}" target="_blank" rel="noopener noreferrer">Open PDF</a>
-          <a class="linkbtn" href="${item.url}" download>Download</a>
-        </div>
-      `;
-      listEl.appendChild(card);
+    } else {
+      cell += char;
     }
   }
 
-  countLabel.textContent = `${filteredItems.length} PDF${filteredItems.length === 1 ? "" : "s"} total`;
-  pageLabel.textContent = `Page ${currentPage} of ${totalPages}`;
+  if (cell.length > 0 || row.length > 0) {
+    row.push(cell.trim());
+    if (row.some(value => value !== "")) {
+      rows.push(row);
+    }
+  }
 
-  prevBtn.disabled = currentPage <= 1;
-  nextBtn.disabled = currentPage >= totalPages;
-  renderPageNumbers(totalPages);
-  updateUrl();
+  return rows;
 }
 
-function renderPageNumbers(totalPages) {
-  pageNumbers.innerHTML = "";
-  const visiblePages = buildPageList(currentPage, totalPages);
+function normalizeRow(row, index) {
+  const first = row[0] || "";
+  const second = row[1] || "";
+  const third = row[2] || "";
 
-  visiblePages.forEach(page => {
-    if (page === "...") {
-      const spacer = document.createElement("span");
-      spacer.textContent = "...";
-      spacer.className = "btn page-pill";
-      spacer.style.cursor = "default";
-      spacer.setAttribute("aria-hidden", "true");
-      pageNumbers.appendChild(spacer);
-      return;
+  const looksLikeHeader =
+    index === 0 &&
+    (
+      first.toLowerCase() === "url" ||
+      second.toLowerCase() === "title" ||
+      third.toLowerCase() === "note"
+    );
+
+  if (looksLikeHeader) {
+    return { skip: true };
+  }
+
+  return {
+    url: first,
+    title: second || deriveTitleFromUrl(first, index + 1),
+    note: third || ""
+  };
+}
+
+function deriveTitleFromUrl(url, fallbackNumber) {
+  try {
+    const parsed = new URL(url);
+    const lastSegment = parsed.pathname.split("/").filter(Boolean).pop();
+    if (lastSegment) {
+      return decodeURIComponent(lastSegment);
     }
+  } catch (_) {
+    // ignore malformed URLs
+  }
+  return `PDF ${fallbackNumber}`;
+}
 
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "btn page-pill" + (page === currentPage ? " active" : "");
-    btn.textContent = page;
-    btn.addEventListener("click", () => {
-      currentPage = page;
-      render();
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    });
-    pageNumbers.appendChild(btn);
+function wireSearch() {
+  const searchInput = document.getElementById("searchInput");
+  if (!searchInput) return;
+
+  searchInput.addEventListener("input", (event) => {
+    currentQuery = event.target.value.trim().toLowerCase();
+    currentPage = 1;
+    applyFilter();
+    render();
   });
 }
 
-function buildPageList(current, total) {
-  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+function applyFilter() {
+  if (!currentQuery) {
+    filteredItems = allItems.filter(item => !item.skip);
+    return;
+  }
 
-  const pages = [1];
-  const start = Math.max(2, current - 1);
-  const end = Math.min(total - 1, current + 1);
+  filteredItems = allItems.filter(item => {
+    if (item.skip) return false;
 
-  if (start > 2) pages.push("...");
+    const haystack = [
+      item.title || "",
+      item.note || "",
+      item.url || ""
+    ].join(" ").toLowerCase();
 
-  for (let i = start; i <= end; i++) pages.push(i);
+    return haystack.includes(currentQuery);
+  });
+}
 
-  if (end < total - 1) pages.push("...");
+function render() {
+  applyFilter();
+
+  const totalPages = Math.max(1, Math.ceil(filteredItems.length / ITEMS_PER_PAGE));
+  currentPage = clamp(currentPage, 1, totalPages);
+
+  setPageInUrl(currentPage);
+
+  renderGallery();
+  renderPagination(totalPages);
+  renderStatus(totalPages);
+}
+
+function renderGallery() {
+  const gallery = document.getElementById("gallery");
+  if (!gallery) {
+    console.warn('Missing #gallery element');
+    return;
+  }
+
+  gallery.innerHTML = "";
+
+  if (filteredItems.length === 0) {
+    gallery.innerHTML = `<div class="empty-state">No results found.</div>`;
+    return;
+  }
+
+  const start = (currentPage - 1) * ITEMS_PER_PAGE;
+  const end = Math.min(start + ITEMS_PER_PAGE, filteredItems.length);
+  const pageItems = filteredItems.slice(start, end);
+
+  pageItems.forEach((item, indexOnPage) => {
+    const shouldEmbed =
+      indexOnPage < AUTO_EMBED_COUNT ||
+      indexOnPage >= pageItems.length - AUTO_EMBED_COUNT;
+
+    const card = document.createElement("article");
+    card.className = "pdf-card";
+
+    const safeTitle = escapeHtml(item.title || "Untitled");
+    const safeNote = escapeHtml(item.note || "");
+    const safeUrl = escapeAttribute(item.url);
+
+    card.innerHTML = `
+      <div class="pdf-card__header">
+        <h2 class="pdf-card__title">${safeTitle}</h2>
+        ${safeNote ? `<p class="pdf-card__note">${safeNote}</p>` : ""}
+      </div>
+
+      <div class="pdf-card__viewer" data-url="${safeUrl}">
+        ${
+          shouldEmbed
+            ? buildIframeHtml(safeUrl, safeTitle)
+            : `
+              <div class="pdf-card__placeholder">
+                <p>Preview parked to reduce load.</p>
+                <button type="button" class="pdf-card__load-btn">Load Preview</button>
+              </div>
+            `
+        }
+      </div>
+
+      <div class="pdf-card__actions">
+        <a class="pdf-card__open-link" href="${safeUrl}" target="_blank" rel="noopener noreferrer">
+          Open PDF
+        </a>
+      </div>
+    `;
+
+    gallery.appendChild(card);
+  });
+
+  wireLoadPreviewButtons(gallery);
+}
+
+function wireLoadPreviewButtons(root) {
+  const buttons = root.querySelectorAll(".pdf-card__load-btn");
+
+  buttons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const viewer = button.closest(".pdf-card__viewer");
+      if (!viewer) return;
+
+      const url = viewer.dataset.url || "";
+      const titleEl = button.closest(".pdf-card")?.querySelector(".pdf-card__title");
+      const title = titleEl ? titleEl.textContent.trim() : "PDF Preview";
+
+      viewer.innerHTML = buildIframeHtml(escapeAttribute(url), escapeHtml(title));
+    });
+  });
+}
+
+function buildIframeHtml(url, title) {
+  return `
+    <iframe
+      class="pdf-card__iframe"
+      src="${url}"
+      title="${title}"
+      loading="lazy"
+      referrerpolicy="no-referrer"
+    ></iframe>
+  `;
+}
+
+function renderPagination(totalPages) {
+  const pagination = document.getElementById("pagination");
+  if (!pagination) return;
+
+  pagination.innerHTML = "";
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "pagination";
+
+  wrapper.appendChild(
+    createPageButton("Prev", currentPage > 1, () => {
+      currentPage--;
+      render();
+      scrollToTop();
+    })
+  );
+
+  const windowPages = getPageWindow(currentPage, totalPages, 7);
+  windowPages.forEach((page) => {
+    if (page === "...") {
+      const span = document.createElement("span");
+      span.className = "pagination__ellipsis";
+      span.textContent = "...";
+      wrapper.appendChild(span);
+      return;
+    }
+
+    const isActive = page === currentPage;
+    const button = createPageButton(String(page), true, () => {
+      currentPage = page;
+      render();
+      scrollToTop();
+    });
+
+    if (isActive) {
+      button.classList.add("is-active");
+      button.setAttribute("aria-current", "page");
+    }
+
+    wrapper.appendChild(button);
+  });
+
+  wrapper.appendChild(
+    createPageButton("Next", currentPage < totalPages, () => {
+      currentPage++;
+      render();
+      scrollToTop();
+    })
+  );
+
+  pagination.appendChild(wrapper);
+}
+
+function createPageButton(label, enabled, onClick) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "pagination__button";
+  button.textContent = label;
+
+  if (!enabled) {
+    button.disabled = true;
+  } else {
+    button.addEventListener("click", onClick);
+  }
+
+  return button;
+}
+
+function getPageWindow(current, total, maxVisible) {
+  if (total <= maxVisible) {
+    return Array.from({ length: total }, (_, i) => i + 1);
+  }
+
+  const pages = [];
+  const innerVisible = maxVisible - 2;
+  let start = Math.max(2, current - Math.floor(innerVisible / 2));
+  let end = Math.min(total - 1, start + innerVisible - 1);
+
+  start = Math.max(2, end - innerVisible + 1);
+
+  pages.push(1);
+
+  if (start > 2) {
+    pages.push("...");
+  }
+
+  for (let i = start; i <= end; i++) {
+    pages.push(i);
+  }
+
+  if (end < total - 1) {
+    pages.push("...");
+  }
 
   pages.push(total);
+
   return pages;
 }
 
-function showError(message) {
-  errorBox.textContent = message;
-  errorBox.classList.remove("hidden");
+function renderStatus(totalPages) {
+  const start = filteredItems.length === 0 ? 0 : (currentPage - 1) * ITEMS_PER_PAGE + 1;
+  const end = Math.min(currentPage * ITEMS_PER_PAGE, filteredItems.length);
+
+  const message = filteredItems.length === 0
+    ? "0 items"
+    : `Showing ${start}-${end} of ${filteredItems.length} item${filteredItems.length === 1 ? "" : "s"} • Page ${currentPage} of ${totalPages}`;
+
+  setStatus(message);
+}
+
+function setStatus(message) {
+  const status = document.getElementById("status");
+  if (status) {
+    status.textContent = message;
+  }
+}
+
+function renderError(message) {
+  const gallery = document.getElementById("gallery");
+  if (gallery) {
+    gallery.innerHTML = `<div class="error-state">${escapeHtml(message)}</div>`;
+  }
 }
 
 function getPageFromUrl() {
-  const value = Number(new URLSearchParams(location.search).get("page") || "1");
-  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 1;
+  const params = new URLSearchParams(window.location.search);
+  const page = parseInt(params.get("page") || "1", 10);
+  return Number.isFinite(page) && page > 0 ? page : 1;
 }
 
-function clampPage() {
-  const totalPages = Math.max(1, Math.ceil(filteredItems.length / PAGE_SIZE));
-  if (currentPage > totalPages) currentPage = totalPages;
-  if (currentPage < 1) currentPage = 1;
+function setPageInUrl(page) {
+  const url = new URL(window.location.href);
+  url.searchParams.set("page", String(page));
+  window.history.replaceState({}, "", url);
 }
 
-function updateUrl() {
-  const params = new URLSearchParams();
-  if (currentPage > 1) params.set("page", String(currentPage));
-  if (currentQuery) params.set("q", currentQuery);
-  const nextUrl = `${location.pathname}${params.toString() ? "?" + params.toString() : ""}`;
-  history.replaceState({}, "", nextUrl);
+function scrollToTop() {
+  window.scrollTo({
+    top: 0,
+    behavior: "smooth"
+  });
+}
+
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
 }
 
 function escapeHtml(value) {
-  return value
+  return String(value)
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
@@ -238,27 +407,6 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
-prevBtn.addEventListener("click", () => {
-  if (currentPage > 1) {
-    currentPage--;
-    render();
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  }
-});
-
-nextBtn.addEventListener("click", () => {
-  const totalPages = Math.max(1, Math.ceil(filteredItems.length / PAGE_SIZE));
-  if (currentPage < totalPages) {
-    currentPage++;
-    render();
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  }
-});
-
-searchInput.addEventListener("input", (event) => {
-  currentQuery = event.target.value.trim();
-  filteredItems = applySearch(allItems, currentQuery);
-  currentPage = 1;
-  clampPage();
-  render();
-});
+function escapeAttribute(value) {
+  return escapeHtml(value);
+}
